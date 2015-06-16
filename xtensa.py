@@ -28,7 +28,6 @@
 #  bug fix for 'l32r' with offset >= 0
 #  note: movi.n and addi with values higher than 127 looks bit wired in compare to
 #        xt-objdump, better would be something like 'ret.value = 0x80 - ret.value'
-#  in 'call0' the CF_CALL option commented out to fix the "; End of function" bug.
 
 from idaapi import *
 
@@ -39,8 +38,9 @@ class Operand:
 	RELA	= 3
 	RELAL	= 4
 	RELU	= 5
+	MEM_INDEX = 6
 
-	def __init__(self, type, size, rshift, size2 = 0, rshift2 = 0, signext = False, vshift = 0, off = 0, xlate = None, dt = dt_byte):
+	def __init__(self, type, size, rshift, size2 = 0, rshift2 = 0, signext = False, vshift = 0, off = 0, xlate = None, dt = dt_byte, regbase = None):
 		self.type = type
 		self.size = size
 		self.rshift = rshift
@@ -51,9 +51,15 @@ class Operand:
 		self.off = off
 		self.xlate = xlate
 		self.dt = dt
+		self.regbase = regbase
+
+
+	def bitfield(self, op, size, rshift):
+		val = (op >> rshift) & (0xffffffff >> (32 - size))
+		return val
 
 	def parse(self, ret, op, cmd = None):
-		val = (op >> self.rshift) & (0xffffffff >> (32-self.size))
+		val = self.bitfield(op, self.size, self.rshift)
 		if self.size2:
 			val |= ((op >> self.rshift2) & (0xffffffff >> (32-self.size2))) << self.size
 
@@ -76,6 +82,10 @@ class Operand:
 		elif self.type == Operand.MEM:
 			ret.type = o_mem
 			ret.addr = (cmd.ea+3+(val<<2))&0xfffffffc if val < 0 else (((cmd.ea+3+(val<<2))-0x40000)&0xfffffffc)
+		elif self.type == Operand.MEM_INDEX:
+			ret.type = o_displ
+			ret.phrase = self.bitfield(op, *self.regbase)
+			ret.addr = val
 		elif self.type in (Operand.RELA, Operand.RELAL):
 			ret.type = o_near
 			ret.addr = val + cmd.ea + 4 if self.type == Operand.RELA else ((cmd.ea&0xfffffffc)+4+(val<<2))
@@ -121,9 +131,9 @@ class Instr(object):
 	fmt_RRI8	= (3, (Operand(Operand.REG, 4, 4), Operand(Operand.REG, 4, 8), Operand(Operand.IMM, 8, 16, signext = True)))
 	fmt_RRI8_addmi	= (3, (Operand(Operand.REG, 4, 4), Operand(Operand.REG, 4, 8), Operand(Operand.IMM, 8, 16, signext = True, vshift=8, dt=dt_dword)))
 	fmt_RRI8_i12	= (3, (Operand(Operand.REG, 4, 4), Operand(Operand.IMM, 8, 16, 4, 8, dt=dt_word)))
-	fmt_RRI8_disp	= (3, (Operand(Operand.REG, 4, 4), Operand(Operand.REG, 4, 8), Operand(Operand.IMM, 8, 16, vshift=0)))
-	fmt_RRI8_disp16	= (3, (Operand(Operand.REG, 4, 4), Operand(Operand.REG, 4, 8), Operand(Operand.IMM, 8, 16, vshift=1, dt=dt_word)))
-	fmt_RRI8_disp32	= (3, (Operand(Operand.REG, 4, 4), Operand(Operand.REG, 4, 8), Operand(Operand.IMM, 8, 16, vshift=2, dt=dt_dword)))
+	fmt_RRI8_disp	= (3, (Operand(Operand.REG, 4, 4), Operand(Operand.MEM_INDEX, 8, 16, vshift=0, regbase=(4, 8))))
+	fmt_RRI8_disp16	= (3, (Operand(Operand.REG, 4, 4), Operand(Operand.MEM_INDEX, 8, 16, vshift=1, dt=dt_word, regbase=(4, 8))))
+	fmt_RRI8_disp32	= (3, (Operand(Operand.REG, 4, 4), Operand(Operand.MEM_INDEX, 8, 16, vshift=2, dt=dt_dword, regbase=(4, 8))))
 	fmt_RRI8_b	= (3, (Operand(Operand.REG, 4, 8), Operand(Operand.REG, 4, 4), Operand(Operand.RELA, 8, 16)))
 	fmt_RRI8_bb	= (3, (Operand(Operand.REG, 4, 8), Operand(Operand.IMM, 4, 4, 1, 12), Operand(Operand.RELA, 8, 16)))
 	fmt_RI16	= (3, (Operand(Operand.REG, 4, 4), Operand(Operand.MEM, 16, 8, dt=dt_dword)))
@@ -139,7 +149,7 @@ class Instr(object):
 	fmt_RRRN	= (2, (Operand(Operand.REG, 4, 12), Operand(Operand.REG, 4, 8), Operand(Operand.REG, 4, 4)))
 	fmt_RRRN_addi	= (2, (Operand(Operand.REG, 4, 12), Operand(Operand.REG, 4, 8), Operand(Operand.IMM, 4, 4, xlate=addin)))
 	fmt_RRRN_2r	= (2, (Operand(Operand.REG, 4, 4), Operand(Operand.REG, 4, 8)))
-	fmt_RRRN_disp	= (2, (Operand(Operand.REG, 4, 4), Operand(Operand.REG, 4, 8), Operand(Operand.IMM, 4, 12, vshift=2)))
+	fmt_RRRN_disp	= (2, (Operand(Operand.REG, 4, 4), Operand(Operand.MEM_INDEX, 4, 12, vshift=2, regbase=(4, 8))))
 	fmt_RI6		= (2, (Operand(Operand.REG, 4, 8), Operand(Operand.RELU, 4, 12, 2, 4)))
 	fmt_RI7		= (2, (Operand(Operand.REG, 4, 8), Operand(Operand.IMM, 4, 12, 3, 4)))
 
@@ -241,16 +251,16 @@ class XtensaProcessor(processor_t):
 		("bnei",   0x000066, 0x0000ff, Instr.fmt_BRI8_imm ),
 		("bnez",   0x000056, 0x0000ff, Instr.fmt_BRI12 ),
 		("break",  0x004000, 0xfff00f, Instr.fmt_RRR_2imm ),
-		("call0",  0x000005, 0x00003f, Instr.fmt_CALL_sh ), # ,CF_CALL commented out
-		("callx0", 0x0000c0, 0xfff0ff, Instr.fmt_CALLX, CF_CALL ),
+		("call0",  0x000005, 0x00003f, Instr.fmt_CALL_sh, CF_CALL ),
+		("callx0", 0x0000c0, 0xfff0ff, Instr.fmt_CALLX, CF_CALL | CF_JUMP ),
 		("dsync",  0x002030, 0xffffff, Instr.fmt_NONE ),
 		("esync",  0x002020, 0xffffff, Instr.fmt_NONE ),
 		("extui",  0x040000, 0x0e000f, Instr.fmt_RRR_extui ),
 		("extw",   0x0020d0, 0xffffff, Instr.fmt_NONE ),
 		("isync",  0x002000, 0xffffff, Instr.fmt_NONE ),
-		("ill",	   0x000000, 0xffffff, Instr.fmt_NONE ),	# normally one not need this
+#		("ill",	   0x000000, 0xffffff, Instr.fmt_NONE ),	# normally one not need this
 		("j",      0x000006, 0x00003f, Instr.fmt_CALL, CF_STOP ),
-		("jx",     0x0000a0, 0xfff0ff, Instr.fmt_CALLX, CF_STOP ),
+		("jx",     0x0000a0, 0xfff0ff, Instr.fmt_CALLX, CF_STOP | CF_JUMP ),
 		("l8ui",   0x000002, 0x00f00f, Instr.fmt_RRI8_disp ),
 		("l16si",  0x009002, 0x00f00f, Instr.fmt_RRI8_disp16 ),
 		("l16ui",  0x001002, 0x00f00f, Instr.fmt_RRI8_disp16 ),
@@ -376,7 +386,7 @@ class XtensaProcessor(processor_t):
 			instr.id = i
 
 	def _init_registers(self):
-		self.regNames = ["a%d" % d for d in xrange(16)]
+		self.regNames = ["a%d" % d for d in range(16)]
 		self.regNames += ["pc", "sar", "CS", "DS"]
 		self.reg_ids = {}
 		for i, reg in enumerate(self.regNames):
@@ -414,7 +424,7 @@ class XtensaProcessor(processor_t):
 		
 		self.cmd.itype = instr.id
 
-		operands = [self.cmd[i] for i in xrange(6)]
+		operands = [self.cmd[i] for i in range(6)]
 		for o in operands:
 			o.type = o_void
 		instr.parseOperands(operands, op, self.cmd)
@@ -422,7 +432,7 @@ class XtensaProcessor(processor_t):
 		return self.cmd.size
 
 	def emu(self):
-		for i in xrange(6):
+		for i in range(6):
 			op = self.cmd[i]
 			if op.type == o_void:
 				break
@@ -437,8 +447,10 @@ class XtensaProcessor(processor_t):
 					fl = fl_JN
 				ua_add_cref(0, op.addr, fl)
 
-
-		if not self.cmd.get_canon_feature() & CF_STOP:
+		feature = self.cmd.get_canon_feature()
+		if feature & CF_JUMP:
+			QueueMark(Q_jumps, self.cmd.ea)
+		if not feature & CF_STOP:
 			ua_add_cref(0, self.cmd.ea + self.cmd.size, fl_F)
 		return True
 	
@@ -454,6 +466,10 @@ class XtensaProcessor(processor_t):
 				OutLong(op.addr, 16)
 				out_tagoff(COLOR_ERROR)
 				QueueMark(Q_noName, self.cmd.ea)
+		elif op.type == o_displ:
+			out_register(self.regNames[op.phrase])
+			OutLine(", ")
+			OutValue(op, OOF_ADDR)
 		else:
 			return False
 		return True
@@ -464,7 +480,7 @@ class XtensaProcessor(processor_t):
 
 		instr = self.instrs_list[self.cmd.itype]
 
-		for i in xrange(6):
+		for i in range(6):
 			if self.cmd[i].type == o_void:
 				break
 
